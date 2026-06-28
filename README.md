@@ -1,18 +1,18 @@
 # Abyss Moth Reactive
 
-Реактивные свойства (в духе **R3 / UniRx** из C#) + **почти бесплатное сериализуемое состояние** для GDScript (Godot 4).
-Подписывайся на данные, фильтруй потоки, а сохранение/загрузка делается одним вызовом.
+Реактивные свойства в духе R3 / UniRx (C#) и сериализуемое состояние для GDScript (Godot 4).
+Подписываешься на данные, фильтруешь потоки, а сохранение и загрузка делаются одним вызовом.
 
-- **Автор:** RimuruDev · **Студия:** Abyss Moth · **Лицензия:** MIT
-- **Движок:** Godot 4.x (используются typed-фичи; проверено на 4.7)
-- **Зависимостей нет.** Всё на `class_name` - обфускация-safe (никаких вызовов методов/сигналов по строкам).
+- Автор: RimuruDev. Студия: Abyss Moth. Лицензия: MIT.
+- Движок: Godot 4.x (используются typed-фичи, проверено на 4.7).
+- Зависимостей нет. Всё на `class_name`, обфускация-safe (нет вызовов методов и сигналов по строкам).
 
 ---
 
 ## Зачем
 
-1. **Реактивность.** Один источник данных (`coins`, `hp`, ...) - много подписчиков. Поменял значение в одном месте - все view/системы обновились сами. При подписке сразу прилетает текущее значение.
-2. **Дешёвый сейв.** Состояние = чистые данные. `serialize()` -> `Dictionary` -> JSON. `deserialize()` выставляет значения обратно и **сам триггерит подписки** - после загрузки UI обновляется без ручной возни. Версии формата + миграции + опц. AES-шифрование встроены.
+1. Реактивность. Один источник данных (`coins`, `hp`, ...) и много подписчиков. Поменял значение в одном месте - все view и системы обновились сами. При подписке сразу приходит текущее значение.
+2. Сохранение. Состояние это чистые данные: `serialize()` даёт `Dictionary`, `deserialize()` выставляет значения обратно и сам триггерит подписки, так что после загрузки UI обновляется без ручной возни. Версии формата, миграции и опциональное AES-шифрование встроены.
 
 ---
 
@@ -20,7 +20,7 @@
 
 Аддон - это самодостаточная папка `addons/abyss_moth/reactive/`. Включать плагин в `Project Settings -> Plugins` **не обязательно**: классы глобальные и работают сразу. Плагин нужен лишь чтобы папка считалась аддоном.
 
-Способы переиспользовать во всех проектах (миф "только официальный магазин" - неверный):
+Способы переиспользовать аддон в других проектах:
 
 - **Git submodule** (как Unity UPM-from-git, работает с приватными репо):
   ```bash
@@ -111,6 +111,62 @@ hp.value = "oops"                  # ошибка ещё на компиляци
 
 ---
 
+## Кейсы использования
+
+Один счётчик, много view. HUD и магазин читают монеты из одного источника, меняешь в любом месте - обновляются оба.
+
+```gdscript
+var coins := ReactiveInt.new(0)
+
+# hud.gd
+coins.subscribe(func(v): hud_label.text = str(v)).add_to(_bag)
+# shop.gd
+coins.subscribe(func(v): buy_button.disabled = v < price).add_to(_bag)
+
+coins.value -= price   # купил, и HUD, и кнопка магазина обновились сами
+```
+
+HP: полоска, порог и смерть из одного значения. Три независимые системы подписаны на один `hp`.
+
+```gdscript
+var hp := ReactiveInt.new(100)
+
+# полоска здоровья
+hp.subscribe(func(v): health_bar.value = v).add_to(_bag)
+# виньетка при низком HP: реагирует на вход в зону, без спама каждый кадр
+hp.map(func(v): return v <= 25).distinct().subscribe(func(low): vignette.visible = low).add_to(_bag)
+# смерть один раз при пересечении нуля
+hp.filter(func(v): return v <= 0).distinct().subscribe(func(_v): die(), false).add_to(_bag)
+```
+
+Производное значение. "Хватает ли на покупку" пересчитывается само от монет и цены.
+
+```gdscript
+var coins := ReactiveInt.new(0)
+var price := ReactiveInt.new(100)
+var can_buy := Rx.computed([coins, price], func(c, p): return c >= p)
+can_buy.subscribe(func(ok): buy_button.disabled = not ok).add_to(_bag)
+```
+
+Настройка, на которую завязано много систем. Переключатель звука: и микшер, и иконка реагируют.
+
+```gdscript
+var sound_on := ReactiveBool.new(true)
+sound_on.subscribe(func(on): AudioServer.set_bus_mute(0, not on)).add_to(_bag)
+sound_on.subscribe(func(on): sound_icon.texture = on_tex if on else off_tex).add_to(_bag)
+```
+
+Презентер не знает про источник. View подписан на read-only поле модели, а откуда данные (новая игра, загрузка сейва, чит-меню) - ему всё равно.
+
+```gdscript
+func bind(progress: PlayerProgress) -> void:
+	progress.coins.to_read_only().subscribe(func(v): _render_coins(v)).add_to(_bag)
+```
+
+После `SaveSystem.load(...)` такие view обновятся сами: значения прилетят через те же подписки.
+
+---
+
 ## Сохранение / загрузка
 
 Наследуй модель от `ReactiveModel`, объяви поля и опиши `_schema()`:
@@ -150,7 +206,7 @@ func _migrate(data: Dictionary, from_version: int) -> Dictionary:
 	return data
 ```
 
-При `load`, если версия файла ≠ текущей, перед применением вызывается `_migrate`.
+При `load`, если версия файла не равна текущей, перед применением вызывается `_migrate`.
 
 ### Кодеки
 
@@ -210,4 +266,4 @@ func test_no_leak() -> void:
 
 ## Лицензия
 
-MIT © 2026 RimuruDev (Abyss Moth). См. [LICENSE](LICENSE).
+MIT (c) 2026 RimuruDev (Abyss Moth). См. [LICENSE](LICENSE).
